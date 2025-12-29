@@ -73,3 +73,70 @@ export const Input = ({ label, error, suffix, className = "", ...props }: InputP
 // Formatter Helpers
 export const formatNumber = (num: number) => new Intl.NumberFormat('fa-IR').format(num);
 export const formatCurrency = (num: number) => new Intl.NumberFormat('fa-IR').format(num) + ' تومان';
+
+export const numberToPersianWords = (num: number): string => {
+  if (num === 0) return 'صفر';
+  
+  const delimiter = ' و ';
+  const unitNames = ['', 'هزار', 'میلیون', 'میلیارد', 'تریلیون'];
+  
+  let numberStr = Math.floor(num).toString();
+  
+  // Pad to multiple of 3
+  while (numberStr.length % 3 !== 0) {
+      numberStr = '0' + numberStr;
+  }
+  
+  const groups = [];
+  for (let i = 0; i < numberStr.length; i += 3) {
+      groups.push(parseInt(numberStr.substring(i, i + 3)));
+  }
+  
+  const groupCount = groups.length;
+  
+  const convertUnder1000 = (n: number) => {
+      if (n === 0) return '';
+      
+      const ones = ['', 'یک', 'دو', 'سه', 'چهار', 'پنج', 'شش', 'هفت', 'هشت', 'نه'];
+      const tens = ['', 'ده', 'بیست', 'سی', 'چهل', 'پنجاه', 'شصت', 'هفتاد', 'هشتاد', 'نود'];
+      const teens = ['ده', 'یازده', 'دوازده', 'سیزده', 'چهارده', 'پانزده', 'شانزده', 'هفده', 'هجده', 'نوزده'];
+      const hundreds = ['', 'صد', 'دویست', 'سیصد', 'چهارصد', 'پانصد', 'ششصد', 'هفتصد', 'هشتصد', 'نهصد'];
+      
+      let str = '';
+      
+      const h = Math.floor(n / 100);
+      const t = Math.floor((n % 100) / 10);
+      const o = n % 10;
+      
+      if (h > 0) {
+          str += hundreds[h];
+          if (t > 0 || o > 0) str += delimiter;
+      }
+      
+      if (t > 0) {
+          if (t === 1) {
+              str += teens[o];
+          } else {
+              str += tens[t];
+              if (o > 0) str += delimiter + ones[o];
+          }
+      } else if (o > 0) {
+          str += ones[o];
+      }
+      
+      return str;
+  };
+
+  let result = '';
+  for (let i = 0; i < groupCount; i++) {
+      const groupVal = groups[i];
+      const unitIndex = groupCount - 1 - i;
+      
+      if (groupVal > 0) {
+          if (result !== '') result += delimiter;
+          result += convertUnder1000(groupVal) + ' ' + unitNames[unitIndex];
+      }
+  }
+  
+  return result.trim();
+};

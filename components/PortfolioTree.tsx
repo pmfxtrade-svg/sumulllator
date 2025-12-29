@@ -8,6 +8,7 @@ interface PortfolioTreeProps {
   selectedId: string | null;
   onSelect: (id: string) => void;
   onAdd: (parentId: string | null) => void;
+  onEdit: (portfolio: Portfolio) => void;
   onDelete: (id: string) => void;
   depth?: number;
 }
@@ -17,6 +18,7 @@ export const PortfolioTree: React.FC<PortfolioTreeProps> = ({
   selectedId, 
   onSelect, 
   onAdd, 
+  onEdit,
   onDelete, 
   depth = 0 
 }) => {
@@ -29,6 +31,7 @@ export const PortfolioTree: React.FC<PortfolioTreeProps> = ({
           selectedId={selectedId}
           onSelect={onSelect}
           onAdd={onAdd}
+          onEdit={onEdit}
           onDelete={onDelete}
           depth={depth}
         />
@@ -53,9 +56,10 @@ const PortfolioNode: React.FC<{
   selectedId: string | null;
   onSelect: (id: string) => void;
   onAdd: (parentId: string | null) => void;
+  onEdit: (portfolio: Portfolio) => void;
   onDelete: (id: string) => void;
   depth: number;
-}> = ({ portfolio, selectedId, onSelect, onAdd, onDelete, depth }) => {
+}> = ({ portfolio, selectedId, onSelect, onAdd, onEdit, onDelete, depth }) => {
   const [isOpen, setIsOpen] = useState(true);
   const isSelected = selectedId === portfolio.id;
   const hasChildren = portfolio.children.length > 0;
@@ -102,6 +106,13 @@ const PortfolioNode: React.FC<{
             <Plus size={14} />
           </button>
           <button 
+            onClick={(e) => { e.stopPropagation(); onEdit(portfolio); }}
+            className={`p-1 rounded hover:bg-white/20`}
+            title="ویرایش سبد"
+          >
+            <Edit2 size={14} />
+          </button>
+          <button 
             onClick={(e) => { e.stopPropagation(); onDelete(portfolio.id); }}
             className={`p-1 rounded hover:bg-red-500/80 hover:text-white ${isSelected ? 'text-white' : 'text-red-500'}`}
             title="حذف سبد"
@@ -118,6 +129,7 @@ const PortfolioNode: React.FC<{
             selectedId={selectedId}
             onSelect={onSelect}
             onAdd={onAdd}
+            onEdit={onEdit}
             onDelete={onDelete}
             depth={depth + 1}
           />

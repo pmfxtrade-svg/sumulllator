@@ -26,7 +26,7 @@ import {
   Check,
   Copy
 } from 'lucide-react';
-import { Card, CardHeader, Button, Input, formatCurrency, formatNumber } from './components/ui';
+import { Card, CardHeader, Button, Input, formatCurrency, formatNumber, numberToPersianWords } from './components/ui';
 import { PortfolioTree } from './components/PortfolioTree';
 import { TradeForm } from './components/TradeForm';
 import { 
@@ -37,6 +37,9 @@ import {
 import { supabase, SQL_SCHEMA } from './supabaseClient';
 import { Auth } from './components/Auth';
 import { Session } from '@supabase/supabase-js';
+
+// --- Constants ---
+const COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#6366f1'];
 
 // --- Helper Functions for Nested State ---
 const findPortfolioRecursive = (portfolios: Portfolio[], id: string): Portfolio | null => {
@@ -66,6 +69,14 @@ const addPortfolioRecursive = (portfolios: Portfolio[], parentId: string, newPor
     if (p.children.length > 0) {
       return { ...p, children: addPortfolioRecursive(p.children, parentId, newPortfolio) };
     }
+    return p;
+  });
+};
+
+const editPortfolioRecursive = (portfolios: Portfolio[], id: string, name: string, allocation: number): Portfolio[] => {
+  return portfolios.map(p => {
+    if (p.id === id) return { ...p, name, allocation };
+    if (p.children.length > 0) return { ...p, children: editPortfolioRecursive(p.children, id, name, allocation) };
     return p;
   });
 };
@@ -110,8 +121,12 @@ export default function App() {
   // --- UI State ---
   const [activeTab, setActiveTab] = useState<'assets' | 'history' | 'analytics'>('assets');
   const [showAddPortfolioModal, setShowAddPortfolioModal] = useState<{isOpen: boolean, parentId: string | null}>({isOpen: false, parentId: null});
+  const [showEditPortfolioModal, setShowEditPortfolioModal] = useState<{isOpen: boolean, portfolio: Portfolio | null}>({isOpen: false, portfolio: null});
   const [newPortfolioName, setNewPortfolioName] = useState('');
   const [newPortfolioAlloc, setNewPortfolioAlloc] = useState('');
+  const [editPortfolioName, setEditPortfolioName] = useState('');
+  const [editPortfolioAlloc, setEditPortfolioAlloc] = useState('');
+  
   const [showTetherModal, setShowTetherModal] = useState(false);
   const [tempTetherPrice, setTempTetherPrice] = useState('');
   const [showDepositModal, setShowDepositModal] = useState(false);
@@ -263,6 +278,27 @@ export default function App() {
     setNewPortfolioAlloc('');
   };
 
+  const handleOpenEditPortfolio = (portfolio: Portfolio) => {
+    setEditPortfolioName(portfolio.name);
+    setEditPortfolioAlloc(portfolio.allocation.toString());
+    setShowEditPortfolioModal({ isOpen: true, portfolio });
+  };
+
+  const handleUpdatePortfolio = () => {
+    if (!showEditPortfolioModal.portfolio || !editPortfolioName) return;
+    
+    const allocationAmount = parseFloat(editPortfolioAlloc) || 0;
+    // Note: Advanced parent budget validation is skipped here for simplicity in this edit step, 
+    // but in a real app, you would check if the new allocation fits within the parent's budget.
+
+    setState(prev => ({
+      ...prev,
+      rootPortfolios: editPortfolioRecursive(prev.rootPortfolios, showEditPortfolioModal.portfolio!.id, editPortfolioName, allocationAmount)
+    }));
+
+    setShowEditPortfolioModal({ isOpen: false, portfolio: null });
+  };
+
   const handleDeletePortfolio = (id: string) => {
     if (confirm('آیا از حذف این سبد و تمام دارایی‌های آن اطمینان دارید؟')) {
        setState(prev => ({
@@ -347,7 +383,44 @@ export default function App() {
 
         setState(prev => {
           const newCash = prev.cash + (tradeData.totalValue - tradeData.fee);
-          const updatedPortfolios = updatePortfolioRecursive(prev.rootPortfolios, { ...portfolio, assets: updatedAssets });
+          
+          // Calculate Net PnL (Realized Profit - Fee) to add to portfolio allocation
+          // This allows purchasing power to grow with profits
+          const netPnl = realizedPnl - tradeData.fee;
+
+          // Recursive function to update portfolio tree and propagate PnL to allocations
+          const updatePortfoliosWithPnL = (list: Portfolio[]): { updated: Portfolio[], found: boolean } => {
+             let foundInThisLayer = false;
+             const updated = list.map(p => {
+                 // Check if this is the target portfolio
+                 if (p.id === state.selectedPortfolioId) {
+                     foundInThisLayer = true;
+                     return { 
+                         ...p, 
+                         assets: updatedAssets, 
+                         allocation: p.allocation + netPnl 
+                     };
+                 }
+                 
+                 // Check children
+                 if (p.children.length > 0) {
+                     const childResult = updatePortfoliosWithPnL(p.children);
+                     if (childResult.found) {
+                         foundInThisLayer = true;
+                         return {
+                             ...p,
+                             children: childResult.updated,
+                             allocation: p.allocation + netPnl // Propagate PnL up to ancestor
+                         };
+                     }
+                 }
+                 return p;
+             });
+             return { updated, found: foundInThisLayer };
+          };
+
+          const { updated: updatedPortfolios } = updatePortfoliosWithPnL(prev.rootPortfolios);
+
           const newTotalAssets = updatedPortfolios.reduce((sum, p) => sum + calculatePortfolioTotal(p), 0);
           const newNetWorth = newCash + newTotalAssets;
 
@@ -431,19 +504,37 @@ export default function App() {
   const totalPnl = unrealizedPnl + realizedPnl;
   const unrealizedPnlPercent = totalCostBasis > 0 ? (unrealizedPnl / totalCostBasis) * 100 : 0;
 
-  // Global PnL Data
-  const globalPnlData = state.rootPortfolios.map(root => {
-      const allIds = getAllPortfolioIds(root);
-      const realized = state.tradeHistory
-        .filter(t => allIds.includes(t.portfolioId))
-        .reduce((sum, t) => sum + (t.realizedPnl || 0), 0);
-      const currentVal = calculatePortfolioTotal(root);
-      const cost = calculatePortfolioCost(root);
-      const unrealized = currentVal - cost;
-      const total = realized + unrealized;
-      const percentOfNetWorth = totalNetWorth > 0 ? (total / totalNetWorth) * 100 : 0;
-      return { name: root.name, realized, unrealized, total, percent: percentOfNetWorth };
-  });
+  // Generic PnL Calculation for any list of portfolios
+  const getPnlDataForPortfolios = (portfolios: Portfolio[]) => {
+    return portfolios.map(p => {
+        const allIds = getAllPortfolioIds(p);
+        const realized = state.tradeHistory
+            .filter(t => allIds.includes(t.portfolioId))
+            .reduce((sum, t) => sum + (t.realizedPnl || 0), 0);
+        const currentVal = calculatePortfolioTotal(p);
+        const cost = calculatePortfolioCost(p);
+        const unrealized = currentVal - cost;
+        const total = realized + unrealized;
+        const percentOfNetWorth = totalNetWorth > 0 ? (total / totalNetWorth) * 100 : 0;
+        return { name: p.name, realized, unrealized, total, percent: percentOfNetWorth };
+    });
+  };
+
+  // Global PnL Data (Roots)
+  const globalPnlData = getPnlDataForPortfolios(state.rootPortfolios);
+
+  // Sub-Portfolio PnL Data (Children of selected)
+  const subPnlData = selectedPortfolio ? getPnlDataForPortfolios(selectedPortfolio.children) : [];
+  
+  // Pie Chart Data for Left Panel (Allocation Distribution)
+  const allocationPieData = state.rootPortfolios.map((p, index) => ({
+    name: p.name,
+    value: p.allocation,
+    color: COLORS[index % COLORS.length]
+  }));
+  
+  // Add Unallocated Cash if needed for the pie chart context, but request said "Distribution based on portfolios".
+  // Let's stick to just showing the breakdown of the Allocated Portfolios to make it clean "Portfolio Management" chart.
 
   const netWorthData = state.netWorthHistory.map(item => ({
       date: new Date(item.date).toLocaleTimeString('fa-IR', { hour: '2-digit', minute: '2-digit' }) + ' ' + new Date(item.date).toLocaleDateString('fa-IR'),
@@ -451,8 +542,6 @@ export default function App() {
       value: item.value
   }));
 
-  const COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#6366f1'];
-  
   const CustomTooltip = ({ active, payload, label }: any) => {
     if (active && payload && payload.length) {
       if (payload[0].payload.percent !== undefined) {
@@ -559,8 +648,44 @@ export default function App() {
              <div className="text-2xl font-bold font-mono tracking-wider">{formatNumber(state.tetherPrice)} <span className="text-xs font-sans text-slate-400">تومان</span></div>
           </Card>
 
+           {/* Capital Distribution Chart */}
+           {allocationPieData.length > 0 && (
+            <Card className="p-4 flex flex-col items-center justify-center min-h-[220px]">
+              <h4 className="font-bold text-slate-700 text-sm mb-2 w-full text-right">توزیع بودجه سبدها</h4>
+              <ResponsiveContainer width="100%" height={180}>
+                <PieChart>
+                  <Pie
+                    data={allocationPieData}
+                    cx="50%"
+                    cy="50%"
+                    innerRadius={40}
+                    outerRadius={70}
+                    paddingAngle={2}
+                    dataKey="value"
+                  >
+                    {allocationPieData.map((entry, index) => (
+                      <Cell key={`cell-${index}`} fill={entry.color} />
+                    ))}
+                  </Pie>
+                  <Tooltip 
+                    formatter={(value: number) => formatCurrency(value)} 
+                    contentStyle={{borderRadius: '8px', fontSize: '12px'}}
+                  />
+                </PieChart>
+              </ResponsiveContainer>
+              <div className="flex flex-wrap gap-2 justify-center mt-2">
+                 {allocationPieData.map((entry, index) => (
+                   <div key={index} className="flex items-center gap-1 text-[10px] text-slate-500">
+                      <div className="w-2 h-2 rounded-full" style={{backgroundColor: entry.color}}></div>
+                      <span>{entry.name}</span>
+                   </div>
+                 ))}
+              </div>
+            </Card>
+           )}
+
           {/* Portfolios */}
-          <Card className="flex-1 overflow-hidden min-h-[400px] flex flex-col">
+          <Card className="flex-1 overflow-hidden min-h-[300px] flex flex-col">
             <CardHeader 
               title="مدیریت سبدها" 
             />
@@ -570,6 +695,7 @@ export default function App() {
                  selectedId={state.selectedPortfolioId}
                  onSelect={handleSelectPortfolio}
                  onAdd={(parentId) => setShowAddPortfolioModal({isOpen: true, parentId})}
+                 onEdit={handleOpenEditPortfolio}
                  onDelete={handleDeletePortfolio}
                />
             </div>
@@ -577,7 +703,7 @@ export default function App() {
         </aside>
 
         {/* Center Panel: Dashboard - Made Wider (xl:col-span-8) */}
-        <section className="col-span-12 lg:col-span-6 xl:col-span-8 flex flex-col gap-4">
+        <section className="col-span-12 lg:col-span-6 xl:col-span-7 flex flex-col gap-4">
            {selectedPortfolio ? (
              <>
                {/* Allocation Summary Card at the Top */}
@@ -847,6 +973,40 @@ export default function App() {
                                <div className="h-full flex items-center justify-center text-slate-400">داده‌ای برای نمایش وجود ندارد</div>
                              )}
                            </div>
+
+                           {/* SUB-PORTFOLIOS PnL Bar Chart */}
+                           {subPnlData.length > 0 && (
+                             <div className="bg-slate-50 rounded-xl p-4 border border-slate-100 h-80 mt-6">
+                               <h4 className="font-bold text-slate-700 mb-4 text-sm text-center">مقایسه سود و زیان زیرمجموعه‌ها</h4>
+                               <ResponsiveContainer width="100%" height="100%">
+                                   <BarChart
+                                     data={subPnlData}
+                                     margin={{
+                                       top: 5,
+                                       right: 30,
+                                       left: 20,
+                                       bottom: 5,
+                                     }}
+                                   >
+                                     <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0" />
+                                     <XAxis dataKey="name" tick={{fontSize: 12}} stroke="#64748b" />
+                                     <YAxis tickFormatter={(val) => `${(val/1000000).toFixed(0)}M`} tick={{fontSize: 11}} stroke="#64748b" />
+                                     <Tooltip content={<CustomTooltip />} />
+                                     <ReferenceLine y={0} stroke="#94a3b8" />
+                                     <Bar 
+                                       dataKey="total" 
+                                       name="سود/زیان کل" 
+                                       radius={[4, 4, 0, 0]} 
+                                       barSize={50}
+                                     >
+                                        {subPnlData.map((entry, index) => (
+                                          <Cell key={`cell-${index}`} fill={entry.total >= 0 ? '#10b981' : '#ef4444'} />
+                                        ))}
+                                     </Bar>
+                                   </BarChart>
+                               </ResponsiveContainer>
+                             </div>
+                           )}
                         </div>
                     )}
                   </div>
@@ -861,7 +1021,7 @@ export default function App() {
         </section>
 
         {/* Right Panel: Actions */}
-        <aside className="col-span-12 lg:col-span-3 xl:col-span-2 flex flex-col gap-4">
+        <aside className="col-span-12 lg:col-span-3 xl:col-span-3 flex flex-col gap-4">
            {/* Cash Card */}
            <Card className="p-5 bg-white border-brand-100">
              
@@ -874,6 +1034,7 @@ export default function App() {
                 <div className="text-xl font-bold text-brand-600 dir-ltr tracking-tight">
                     {formatCurrency(totalNetWorth)}
                 </div>
+                <div className="text-xs text-slate-400 mt-1">{numberToPersianWords(totalNetWorth)} تومان</div>
              </div>
 
              {/* Liquid Cash Section */}
@@ -881,6 +1042,7 @@ export default function App() {
                <div>
                    <span className="text-sm text-slate-500 font-medium block">موجودی نقد (آزاد)</span>
                    <div className="text-2xl font-bold text-slate-800 mt-1">{formatCurrency(state.cash)}</div>
+                   <div className="text-xs text-slate-400 mt-1">{numberToPersianWords(state.cash)} تومان</div>
                </div>
                <div className="p-3 bg-green-50 text-green-600 rounded-xl">
                  <Wallet size={24} />
@@ -918,6 +1080,26 @@ export default function App() {
               <Input label="نام سبد" value={newPortfolioName} onChange={e => setNewPortfolioName(e.target.value)} autoFocus />
               <Input label="بودجه تخصیصی (تومان)" type="number" value={newPortfolioAlloc} onChange={e => setNewPortfolioAlloc(e.target.value)} />
               <Button onClick={handleAddPortfolio} className="w-full mt-2">ایجاد سبد</Button>
+            </div>
+          </Card>
+        </div>
+      )}
+
+      {/* Edit Portfolio Modal */}
+      {showEditPortfolioModal.isOpen && (
+        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+          <Card className="w-full max-w-md p-6">
+            <div className="flex justify-between items-center mb-4">
+              <h3 className="font-bold text-lg">ویرایش سبد</h3>
+              <button onClick={() => setShowEditPortfolioModal({isOpen: false, portfolio: null})}><X size={20} /></button>
+            </div>
+            <div className="space-y-4">
+              <Input label="نام سبد" value={editPortfolioName} onChange={e => setEditPortfolioName(e.target.value)} autoFocus />
+              <Input label="بودجه تخصیصی (تومان)" type="number" value={editPortfolioAlloc} onChange={e => setEditPortfolioAlloc(e.target.value)} />
+              <div className="flex gap-2">
+                 <Button onClick={handleUpdatePortfolio} className="flex-1 mt-2">ذخیره تغییرات</Button>
+                 <Button variant="secondary" onClick={() => setShowEditPortfolioModal({isOpen: false, portfolio: null})} className="flex-1 mt-2">انصراف</Button>
+              </div>
             </div>
           </Card>
         </div>

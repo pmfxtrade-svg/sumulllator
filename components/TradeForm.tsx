@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Asset, FeeType, TradeType, Portfolio } from '../types';
-import { Card, CardHeader, Input, Button, formatCurrency, formatNumber } from './ui';
-import { RefreshCw, Calculator, TrendingUp, TrendingDown, Wallet, FolderTree, ArrowRight } from 'lucide-react';
+import { Card, CardHeader, Input, Button, formatCurrency, formatNumber, numberToPersianWords } from './ui';
+import { RefreshCw, Calculator, TrendingUp, TrendingDown, Wallet, FolderTree, ArrowRight, Info } from 'lucide-react';
 
 interface TradeFormProps {
   portfolio: Portfolio | null;
@@ -65,6 +65,21 @@ export const TradeForm: React.FC<TradeFormProps> = ({
     }
   }, [price, amount, total, lastEdited]);
 
+  // --- Budget Calculation Logic ---
+  const calculateUsedBudget = (p: Portfolio) => {
+    // Used = Cost of current assets + Sum of children allocations
+    const assetsCost = p.assets.reduce((sum, a) => sum + (a.amount * a.avgBuyPrice), 0);
+    const childrenAlloc = p.children.reduce((sum, c) => sum + c.allocation, 0);
+    return assetsCost + childrenAlloc;
+  };
+
+  const usedBudget = portfolio ? calculateUsedBudget(portfolio) : 0;
+  const remainingBudget = portfolio ? Math.max(0, portfolio.allocation - usedBudget) : 0;
+  
+  // Maximum buying power is constrained by BOTH global cash and portfolio budget
+  const maxBuyPower = Math.min(cashBalance, remainingBudget);
+
+
   const getPriceInToman = () => {
     const p = parseFloat(price) || 0;
     return currency === 'tether' ? p * tetherPrice : p;
@@ -89,10 +104,19 @@ export const TradeForm: React.FC<TradeFormProps> = ({
     const finalFee = calculateFee();
     const finalAmount = parseFloat(amount);
     const finalTotal = parseFloat(total);
+    const totalCostInToman = finalTotal * (currency === 'tether' ? tetherPrice : 1);
 
-    if (type === 'buy' && (finalTotal * (currency === 'tether' ? tetherPrice : 1) + finalFee) > cashBalance) {
-      alert('موجودی نقد کافی نیست!');
-      return;
+    if (type === 'buy') {
+      // Global Cash Check
+      if ((totalCostInToman + finalFee) > cashBalance) {
+        alert('موجودی نقد کافی نیست!');
+        return;
+      }
+      // Portfolio Budget Check
+      if (totalCostInToman > remainingBudget) {
+          alert(`بودجه این سبد کافی نیست! بودجه باقی‌مانده: ${formatCurrency(remainingBudget)}`);
+          return;
+      }
     }
 
     if (type === 'sell') {
@@ -193,6 +217,25 @@ export const TradeForm: React.FC<TradeFormProps> = ({
              <Wallet size={24} className="mx-auto mb-2 opacity-50" />
              لطفاً یک سبد را از بالا انتخاب کنید
            </div>
+        )}
+
+        {/* Purchasing Power Info */}
+        {portfolio && type === 'buy' && (
+            <div className="bg-blue-50 border border-blue-100 rounded-lg p-3 text-sm text-blue-800">
+                <div className="flex items-center gap-2 font-medium mb-1">
+                    <Info size={16} />
+                    قدرت خرید برای این سبد:
+                </div>
+                <div className="flex justify-between items-center">
+                   <span className="font-bold text-lg dir-ltr">{formatCurrency(maxBuyPower)}</span>
+                </div>
+                <div className="text-xs text-blue-600/80 mt-1">
+                    {numberToPersianWords(maxBuyPower)} تومان
+                </div>
+                <div className="text-[10px] text-blue-400 mt-2 border-t border-blue-100 pt-1">
+                    بودجه سبد: {formatCurrency(portfolio.allocation)} | مصرف شده: {formatCurrency(usedBudget)}
+                </div>
+            </div>
         )}
 
         {/* Asset Selection */}
