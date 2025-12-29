@@ -1,0 +1,5 @@
+{
+  "name": "TraderSim Pro",
+  "description": "A professional trading simulator with nested portfolio management, real-time calculation, and Persian RTL support.",
+  "requestFramePermissions": []
+}
