@@ -32,7 +32,8 @@ import {
   Trash2,
   Calendar,
   Clock,
-  Briefcase
+  Briefcase,
+  AlertCircle
 } from 'lucide-react';
 import { Card, CardHeader, Button, Input, formatCurrency, formatNumber, numberToPersianWords } from './components/ui';
 import { PortfolioTree } from './components/PortfolioTree';
@@ -42,7 +43,7 @@ import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Legend, ReferenceLine,
   AreaChart, Area
 } from 'recharts';
-import { supabase, SQL_SCHEMA } from './supabaseClient';
+import { supabase, SQL_SCHEMA, SQL_SCHEMA_VERSION } from './supabaseClient';
 import { Auth } from './components/Auth';
 import { Session } from '@supabase/supabase-js';
 
@@ -189,7 +190,9 @@ export default function App() {
   const [tempTetherPrice, setTempTetherPrice] = useState('');
   const [showDepositModal, setShowDepositModal] = useState(false);
   const [depositAmount, setDepositAmount] = useState('');
+  
   const [showSqlCopied, setShowSqlCopied] = useState(false);
+  const [hasSqlUpdate, setHasSqlUpdate] = useState(false);
 
   // Expanded Positions State
   const [expandedPositions, setExpandedPositions] = useState<string[]>([]);
@@ -197,6 +200,12 @@ export default function App() {
   // --- Auth & Data Loading Logic ---
   useEffect(() => {
     setIsClient(true);
+
+    // Check SQL Version
+    const savedVer = localStorage.getItem('sql_schema_version');
+    if (savedVer !== SQL_SCHEMA_VERSION) {
+        setHasSqlUpdate(true);
+    }
 
     supabase.auth.getSession().then(({ data: { session } }) => {
       setSession(session);
@@ -329,8 +338,9 @@ export default function App() {
                 // Realized PnL = (Sell Price - Avg Buy Price) * Sell Amount - Fee
                 const sellValue = trade.totalValue;
                 const costOfSold = trade.amount * position.avgBuyPrice;
-                const tradePnl = sellValue - costOfSold - trade.fee; // Net PnL
-
+                const tradePnl = sellValue - costOfSold - trade.fee; // Net PnL (Fees are usually deducted from result)
+                // Note: We track fee separately in aggregated stats for global view, but here PnL per position includes fee deduction if we want accurate "Net PnL"
+                
                 position.realizedPnl += tradePnl;
                 position.remainingAmount -= trade.amount;
 
@@ -361,7 +371,6 @@ export default function App() {
 
 
   // --- Helper: Replay Trades for Integrity ---
-  // When editing/deleting history, we must rebuild the 'assets' state of the affected portfolio from scratch.
   const replayPortfolioAssets = (portfolioId: string, trades: Trade[]) => {
       const pTrades = trades.filter(t => t.portfolioId === portfolioId).sort((a,b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
       
@@ -614,8 +623,6 @@ export default function App() {
     const recalculatedAssets = replayPortfolioAssets(portfolioId, updatedHistory);
 
     // 4. Calculate Cash Delta (Simplification: Revert the specific trade's cash effect)
-    // NOTE: A perfect system would replay cash from start, but for this simulator, reversing the single trade is acceptable 
-    // unless fees/PnL allocations are complex. We will do a reverse operation.
     const deletedTrade = state.tradeHistory.find(t => t.id === tradeId);
     let cashChange = 0;
     if (deletedTrade) {
@@ -633,12 +640,6 @@ export default function App() {
         const updatedPortfolio = { ...targetPortfolio, assets: recalculatedAssets };
         const updatedRootPortfolios = updatePortfolioRecursive(prev.rootPortfolios, updatedPortfolio);
         
-        // Also need to revert PnL allocation if it was a Sell trade? 
-        // This is complex. For now, we update cash and assets. 
-        // If the trade was a sell that added to allocation, removing it should reduce allocation.
-        // Doing strictly via recursive update.
-        
-        // Update allocation reverse logic for PnL
         let finalRoots = updatedRootPortfolios;
         if (deletedTrade && deletedTrade.type === 'sell') {
              const netPnl = (deletedTrade.realizedPnl || 0) - deletedTrade.fee;
@@ -655,9 +656,7 @@ export default function App() {
                     return p;
                 });
              };
-             // Note: Propagation logic in delete is tricky.
-             // For simplicity in this demo, we assume manual allocation adjustment might be needed if deep hierarchy PnL logic desyncs.
-             // But let's try to be consistent with the simple update.
+             finalRoots = revertPnL(updatedRootPortfolios);
         }
 
         const newTotalAssets = finalRoots.reduce((sum, p) => sum + calculatePortfolioTotal(p), 0);
@@ -675,10 +674,6 @@ export default function App() {
   };
 
   const handleAssetPriceUpdate = (assetId: string, newPrice: number) => {
-    // If ALL is selected, we can't easily know which specific portfolio's asset to update 
-    // without more context, but usually price updates are per portfolio view.
-    // We will find the asset across all portfolios if needed, but for now strict to selected.
-    
     // If specific portfolio selected:
     if (state.selectedPortfolioId && state.selectedPortfolioId !== ALL_PORTFOLIOS_ID) {
         const portfolio = findPortfolioRecursive(state.rootPortfolios, state.selectedPortfolioId);
@@ -689,9 +684,7 @@ export default function App() {
         );
         updateStateWithAssetChange(portfolio, updatedAssets);
     } else {
-        // If ALL selected, finding asset by ID is risky if IDs aren't globally unique. 
-        // Our IDs are time-based so likely unique.
-        // Find portfolio containing this asset.
+        // If ALL selected
         const allPorts = flattenPortfolios(state.rootPortfolios);
         const targetP = allPorts.find(p => p.assets.some(a => a.id === assetId));
         if (targetP) {
@@ -736,6 +729,8 @@ export default function App() {
   const handleCopySql = () => {
     navigator.clipboard.writeText(SQL_SCHEMA);
     setShowSqlCopied(true);
+    setHasSqlUpdate(false);
+    localStorage.setItem('sql_schema_version', SQL_SCHEMA_VERSION);
     setTimeout(() => setShowSqlCopied(false), 2000);
   };
 
@@ -769,18 +764,7 @@ export default function App() {
      let allocation = 0;
      let totalVal = 0;
      let totalCost = 0;
-
-     const processP = (p: Portfolio) => {
-         assets = [...assets, ...p.assets];
-         allocation += p.allocation; // This sums allocations. Note: In nested, only root allocation matters for "Total Capital"? 
-         // Logic: If I select "All", I want sum of root allocations.
-         
-         // Value
-         const pVal = calculatePortfolioTotal(p);
-         totalVal += pVal; // This might double count if we aren't careful? calculatePortfolioTotal recurses.
-         // Wait, calculatePortfolioTotal returns assets + children.
-         // If we iterate roots and sum, we are good.
-     };
+     let totalFees = 0; // New: Track total fees for accurate PnL
 
      if (isAllPortfolios) {
          state.rootPortfolios.forEach(p => {
@@ -796,25 +780,32 @@ export default function App() {
          };
          collectAssets(state.rootPortfolios);
          history = state.tradeHistory;
+         totalFees = state.tradeHistory.reduce((sum, t) => sum + t.fee, 0);
      } else if (displayedPortfolios.length > 0) {
          const p = displayedPortfolios[0];
          totalVal = calculatePortfolioTotal(p);
          allocation = p.allocation;
-         // Assets: show direct assets + maybe indicator of children? 
-         // Existing logic: "displayPortfolio" handled viewing child assets.
-         // Let's reuse displayPortfolio logic for the ASSET TABLE.
          
-         // History: Filter for this portfolio and its children
          const allIds = getAllPortfolioIds(p);
          history = state.tradeHistory.filter(t => allIds.includes(t.portfolioId));
+         totalFees = history.reduce((sum, t) => sum + t.fee, 0);
+         
+         // Helper to collect assets for specific portfolio view
+         const collectAssetsForView = (nodes: Portfolio[]) => {
+             let res: Asset[] = [];
+             nodes.forEach(n => {
+                 res.push(...n.assets);
+                 res.push(...collectAssetsForView(n.children));
+             });
+             return res;
+         };
+         assets = collectAssetsForView([p]);
      }
 
      // Calculate cost
-     // We need to iterate the ASSETS gathered to sum (amount * avgPrice)
-     // BUT, for "All", we just gathered all assets.
      totalCost = assets.reduce((sum, a) => sum + (a.amount * a.avgBuyPrice), 0);
 
-     return { assets, history, allocation, totalVal, totalCost };
+     return { assets, history, allocation, totalVal, totalCost, totalFees };
   }, [state.rootPortfolios, state.tradeHistory, isAllPortfolios, displayedPortfolios]);
 
   // Logic for Asset Table display (Sub-view navigation)
@@ -835,20 +826,23 @@ export default function App() {
 
 
   const allocationPercentage = totalNetWorth > 0 ? (aggregatedStats.allocation / totalNetWorth) * 100 : 0;
+  
+  // PnL Logic Updates
   const unrealizedPnl = aggregatedStats.totalVal - aggregatedStats.totalCost;
   const realizedPnl = aggregatedStats.history.reduce((sum, t) => sum + (t.realizedPnl || 0), 0);
-  const totalPnl = unrealizedPnl + realizedPnl;
+  
+  // Net Total Return = (Realized + Unrealized) - All Fees Paid
+  const totalPnl = (unrealizedPnl + realizedPnl) - aggregatedStats.totalFees;
+  
+  // Percentage based on TOTAL CAPITAL (Current Net Worth), not just cost basis, as requested
+  // However, mathematically for ROI: Total PnL / (Net Worth - Total PnL) approximates initial capital
+  // Or simply Total PnL / Total Net Worth to show "Profit Share"
+  // Let's use Total PnL / Total Cost for standard ROI, but since user asked "Relative to Total Capital",
+  // We'll show (Total PnL / Net Worth) * 100
+  const totalPnlPercent = totalNetWorth > 0 ? (totalPnl / totalNetWorth) * 100 : 0;
+  
+  // Open PnL Percentage (Strictly based on cost basis of open assets)
   const unrealizedPnlPercent = aggregatedStats.totalCost > 0 ? (unrealizedPnl / aggregatedStats.totalCost) * 100 : 0;
-
-  // Global PnL Data (Roots)
-  const globalPnlData = state.rootPortfolios.map(p => {
-     const allIds = getAllPortfolioIds(p);
-     const realized = state.tradeHistory.filter(t => allIds.includes(t.portfolioId)).reduce((sum, t) => sum + (t.realizedPnl || 0), 0);
-     const currentVal = calculatePortfolioTotal(p);
-     const cost = calculatePortfolioCost(p);
-     const total = realized + (currentVal - cost);
-     return { name: p.name, total };
-  });
 
   const allocationPieData = state.rootPortfolios.map((p, index) => ({
     name: p.name,
@@ -897,7 +891,12 @@ export default function App() {
           </div>
 
           <div className="flex items-center gap-3">
-            <button onClick={handleCopySql} className="p-2 text-slate-500 hover:bg-slate-100 hover:text-brand-600 rounded-lg" title="کپی SQL">
+            <button 
+                onClick={handleCopySql} 
+                className={`relative p-2 rounded-lg transition-colors ${hasSqlUpdate ? 'bg-red-50 text-red-500 hover:bg-red-100' : 'text-slate-500 hover:bg-slate-100 hover:text-brand-600'}`} 
+                title={hasSqlUpdate ? "بروزرسانی جدید برای دیتابیس موجود است" : "کپی SQL"}
+            >
+               {hasSqlUpdate && <span className="absolute top-2 right-2 w-2 h-2 bg-red-500 rounded-full animate-pulse"></span>}
                {showSqlCopied ? <Check size={20} className="text-green-500" /> : <Database size={20} />}
             </button>
             <div className="h-6 w-px bg-slate-200 mx-1"></div>
@@ -1020,9 +1019,9 @@ export default function App() {
                      </div>
                      <div className="bg-slate-50 rounded-xl p-4 border border-slate-100 group hover:border-brand-200 transition-colors">
                         <div className="flex items-center gap-2 text-slate-500 text-xs font-medium mb-1"><Activity size={14} className={unrealizedPnl >= 0 ? "text-green-500" : "text-red-500"} />سود/زیان باز</div>
-                        <div className={`text-lg font-bold dir-ltr ${unrealizedPnl >= 0 ? 'text-green-600' : 'text-red-600'}`}>{formatNumber(Math.round(unrealizedPnl))}</div>
-                        <div className={`text-[10px] mt-1 dir-ltr flex items-center gap-1 ${unrealizedPnlPercent >= 0 ? 'text-green-500' : 'text-red-500'}`}>
-                           {unrealizedPnlPercent >= 0 ? <ArrowUpRight size={10} /> : <ArrowDownRight size={10} />}{unrealizedPnlPercent.toFixed(2)}%
+                        <div className={`text-lg font-bold dir-ltr ${unrealizedPnl < 0 ? 'text-red-600' : 'text-green-600'}`}>{formatNumber(Math.round(unrealizedPnl))}</div>
+                        <div className={`text-[10px] mt-1 dir-ltr flex items-center gap-1 ${unrealizedPnl < 0 ? 'text-red-500' : 'text-green-500'}`}>
+                           {unrealizedPnl >= 0 ? <ArrowUpRight size={10} /> : <ArrowDownRight size={10} />}{unrealizedPnlPercent.toFixed(2)}%
                         </div>
                      </div>
                      <div className="bg-slate-50 rounded-xl p-4 border border-slate-100 group hover:border-brand-200 transition-colors">
@@ -1031,9 +1030,12 @@ export default function App() {
                         <div className="text-[10px] text-slate-400 mt-1">تومان</div>
                      </div>
                      <div className="bg-slate-50 rounded-xl p-4 border border-slate-100 group hover:border-brand-200 transition-colors">
-                        <div className="flex items-center gap-2 text-slate-500 text-xs font-medium mb-1"><PieIcon size={14} className="text-purple-500" />بازده کل</div>
+                        <div className="flex items-center gap-2 text-slate-500 text-xs font-medium mb-1"><PieIcon size={14} className="text-purple-500" />بازده کل (با کارمزد)</div>
                         <div className={`text-lg font-bold dir-ltr ${totalPnl >= 0 ? 'text-green-600' : 'text-red-600'}`}>{formatNumber(Math.round(totalPnl))}</div>
-                        <div className="text-[10px] text-slate-400 mt-1">مجموع سود و زیان</div>
+                        <div className={`text-[10px] mt-1 dir-ltr flex items-center gap-1 ${totalPnl >= 0 ? 'text-green-500' : 'text-red-500'}`}>
+                           <span className="text-slate-400 ml-1">(نسبت به کل سرمایه)</span>
+                           {totalPnlPercent.toFixed(2)}%
+                        </div>
                      </div>
                   </div>
 
@@ -1126,7 +1128,7 @@ export default function App() {
                                          />
                                        </td>
                                        <td className="p-3 font-bold">{formatNumber(Math.round(currentValue))}</td>
-                                       <td className={`p-3 dir-ltr text-right ${pnl >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                                       <td className={`p-3 dir-ltr text-right ${pnl < 0 ? 'text-red-600' : 'text-green-600'}`}>
                                          {pnlPercent.toFixed(2)}%
                                        </td>
                                      </tr>
@@ -1251,14 +1253,14 @@ export default function App() {
                     {/* ANALYTICS TAB */}
                     {activeTab === 'analytics' && (
                         <div className="space-y-6 mt-4">
-                           {/* Chart 1: Net Worth (Area) */}
-                           <div className="bg-white rounded-xl p-4 border border-slate-200 shadow-sm h-80">
-                             <h4 className="font-bold text-slate-700 mb-4 text-sm text-center flex items-center justify-center gap-2">
-                                <TrendingUp size={16} className="text-brand-600" />
-                                روند ارزش کل دارایی (Net Worth)
+                           {/* Chart 1: Net Worth (Area) - Now the only main chart */}
+                           <div className="bg-white rounded-xl p-6 border border-slate-200 shadow-sm h-[500px]">
+                             <h4 className="font-bold text-slate-700 mb-6 text-lg text-center flex items-center justify-center gap-2">
+                                <TrendingUp size={24} className="text-brand-600" />
+                                روند رشد ارزش کل سرمایه (Net Worth)
                              </h4>
                              {netWorthData.length > 0 ? (
-                               <ResponsiveContainer width="100%" height="100%">
+                               <ResponsiveContainer width="100%" height="90%">
                                   <AreaChart data={netWorthData} margin={{ top: 10, right: 30, left: 20, bottom: 0 }}>
                                     <defs>
                                       <linearGradient id="colorValue" x1="0" y1="0" x2="0" y2="1">
@@ -1267,55 +1269,15 @@ export default function App() {
                                       </linearGradient>
                                     </defs>
                                     <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0" />
-                                    <XAxis dataKey="date" tick={false} axisLine={false} />
-                                    <YAxis tickFormatter={(val) => `${(val/1000000000).toFixed(2)}B`} tick={{fontSize: 11}} stroke="#64748b" domain={['auto', 'auto']}/>
+                                    <XAxis dataKey="date" tick={{fontSize: 12}} axisLine={false} tickMargin={10} />
+                                    <YAxis tickFormatter={(val) => `${(val/1000000000).toFixed(2)}B`} tick={{fontSize: 12}} stroke="#64748b" domain={['auto', 'auto']}/>
                                     <Tooltip content={<CustomTooltip />} />
-                                    <Area type="monotone" dataKey="value" name="value" stroke="#2563eb" fillOpacity={1} fill="url(#colorValue)" strokeWidth={2}/>
+                                    <Area type="monotone" dataKey="value" name="value" stroke="#2563eb" fillOpacity={1} fill="url(#colorValue)" strokeWidth={3}/>
                                   </AreaChart>
                                </ResponsiveContainer>
                              ) : (
-                               <div className="h-full flex items-center justify-center text-slate-400">داده‌ای برای نمایش وجود ندارد</div>
+                               <div className="h-full flex items-center justify-center text-slate-400 text-lg">داده‌ای برای نمایش وجود ندارد</div>
                              )}
-                           </div>
-
-                           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                                {/* Chart 2: Allocation (Pie) */}
-                                <div className="bg-white rounded-xl p-4 border border-slate-200 shadow-sm h-80">
-                                    <h4 className="font-bold text-slate-700 mb-4 text-sm text-center">توزیع دارایی‌ها (Allocation)</h4>
-                                    <ResponsiveContainer width="100%" height="100%">
-                                        <PieChart>
-                                            <Pie data={allocationPieData} cx="50%" cy="50%" outerRadius={80} fill="#8884d8" dataKey="value" label={({name, percent}) => `${name} ${(percent * 100).toFixed(0)}%`}>
-                                                 {allocationPieData.map((entry, index) => ( <Cell key={`cell-${index}`} fill={entry.color} /> ))}
-                                            </Pie>
-                                            <Tooltip formatter={(value: number) => formatCurrency(value)} contentStyle={{borderRadius: '8px', fontSize: '12px', direction: 'rtl'}}/>
-                                            <Legend wrapperStyle={{fontSize: '11px', paddingTop: '10px'}}/>
-                                        </PieChart>
-                                    </ResponsiveContainer>
-                                </div>
-
-                                {/* Chart 3: PnL Analysis (Bar) */}
-                                <div className="bg-white rounded-xl p-4 border border-slate-200 shadow-sm h-80">
-                                     <h4 className="font-bold text-slate-700 mb-4 text-sm text-center">عملکرد پوزیشن‌های بسته شده (سود/زیان)</h4>
-                                     <ResponsiveContainer width="100%" height="100%">
-                                        <BarChart data={processPositions.filter(p => p.status === 'CLOSED' && Math.abs(p.realizedPnl) > 0).slice(0, 8)}>
-                                            <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0" />
-                                            <XAxis dataKey="assetName" tick={{fontSize: 10}} />
-                                            <YAxis tickFormatter={(val) => `${(val/1000000).toFixed(1)}M`} tick={{fontSize: 10}} />
-                                            <Tooltip formatter={(value: number) => formatCurrency(value)} cursor={{fill: '#f1f5f9'}} contentStyle={{borderRadius: '8px', fontSize: '12px'}} />
-                                            <ReferenceLine y={0} stroke="#94a3b8" />
-                                            <Bar dataKey="realizedPnl" name="سود/زیان" radius={[4, 4, 0, 0]}>
-                                                {processPositions.filter(p => p.status === 'CLOSED' && Math.abs(p.realizedPnl) > 0).slice(0, 8).map((entry, index) => (
-                                                    <Cell key={`cell-${index}`} fill={entry.realizedPnl >= 0 ? '#10b981' : '#ef4444'} />
-                                                ))}
-                                            </Bar>
-                                        </BarChart>
-                                     </ResponsiveContainer>
-                                     {processPositions.filter(p => p.status === 'CLOSED').length === 0 && (
-                                         <div className="absolute inset-0 flex items-center justify-center text-slate-400 bg-white/50 backdrop-blur-[1px]">
-                                             هنوز پوزیشنی بسته نشده است
-                                         </div>
-                                     )}
-                                </div>
                            </div>
                         </div>
                     )}

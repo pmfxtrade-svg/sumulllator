@@ -95,9 +95,11 @@ export const CardHeader = ({ title, action }: { title: string, action?: React.Re
 );
 
 // Button Component
-export interface ButtonProps extends React.ComponentProps<'button'> {
+export interface ButtonProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
   variant?: 'primary' | 'secondary' | 'danger' | 'outline' | 'ghost';
   size?: 'sm' | 'md' | 'lg';
+  children?: React.ReactNode;
+  className?: string;
 }
 
 export const Button = ({ children, variant = 'primary', size = 'md', className = "", ...props }: ButtonProps) => {
@@ -125,17 +127,21 @@ export const Button = ({ children, variant = 'primary', size = 'md', className =
 };
 
 // Input Component
-export interface InputProps extends React.ComponentProps<'input'> {
+export interface InputProps extends React.InputHTMLAttributes<HTMLInputElement> {
   label?: string;
   error?: string;
   suffix?: string;
-  showNumberHelper?: boolean; // Optional prop to force number helper
+  showNumberHelper?: boolean;
+  className?: string;
+  value?: string | number | readonly string[];
+  type?: string;
 }
 
-export const Input = ({ label, error, suffix, showNumberHelper, className = "", value, ...props }: InputProps) => {
+export const Input = ({ label, error, suffix, showNumberHelper, className = "", value, type, ...props }: InputProps) => {
   // Determine if we should show the number helper
   const val = value;
-  const isNumericType = props.type === 'number' || showNumberHelper;
+  const inputType = type || 'text';
+  const isNumericType = inputType === 'number' || showNumberHelper;
   const hasValidValue = val !== '' && val !== undefined && val !== null;
   const numVal = hasValidValue ? parseFloat(val.toString()) : NaN;
   const shouldShowHelper = isNumericType && hasValidValue && !isNaN(numVal);
@@ -145,6 +151,7 @@ export const Input = ({ label, error, suffix, showNumberHelper, className = "", 
       {label && <label className="text-sm font-medium text-slate-700">{label}</label>}
       <div className="relative flex items-center">
         <input
+          type={inputType}
           className={`flex h-10 w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-transparent disabled:cursor-not-allowed disabled:bg-slate-50 ${error ? 'border-red-500 focus:ring-red-500' : ''} ${className}`}
           value={value}
           {...props}
