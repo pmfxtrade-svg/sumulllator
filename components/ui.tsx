@@ -95,7 +95,7 @@ export const CardHeader = ({ title, action }: { title: string, action?: React.Re
 );
 
 // Button Component
-export interface ButtonProps extends React.ComponentPropsWithoutRef<'button'> {
+export interface ButtonProps extends React.ComponentProps<'button'> {
   variant?: 'primary' | 'secondary' | 'danger' | 'outline' | 'ghost';
   size?: 'sm' | 'md' | 'lg';
 }
@@ -125,16 +125,16 @@ export const Button = ({ children, variant = 'primary', size = 'md', className =
 };
 
 // Input Component
-export interface InputProps extends React.ComponentPropsWithoutRef<'input'> {
+export interface InputProps extends React.ComponentProps<'input'> {
   label?: string;
   error?: string;
   suffix?: string;
   showNumberHelper?: boolean; // Optional prop to force number helper
 }
 
-export const Input = ({ label, error, suffix, showNumberHelper, className = "", ...props }: InputProps) => {
+export const Input = ({ label, error, suffix, showNumberHelper, className = "", value, ...props }: InputProps) => {
   // Determine if we should show the number helper
-  const val = props.value;
+  const val = value;
   const isNumericType = props.type === 'number' || showNumberHelper;
   const hasValidValue = val !== '' && val !== undefined && val !== null;
   const numVal = hasValidValue ? parseFloat(val.toString()) : NaN;
@@ -146,6 +146,7 @@ export const Input = ({ label, error, suffix, showNumberHelper, className = "", 
       <div className="relative flex items-center">
         <input
           className={`flex h-10 w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-transparent disabled:cursor-not-allowed disabled:bg-slate-50 ${error ? 'border-red-500 focus:ring-red-500' : ''} ${className}`}
+          value={value}
           {...props}
         />
         {suffix && <span className="absolute left-3 text-slate-400 text-sm">{suffix}</span>}

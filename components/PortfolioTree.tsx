@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { Portfolio } from '../types';
-import { ChevronDown, ChevronLeft, Folder, FolderOpen, Plus, Trash2, Edit2 } from 'lucide-react';
+import { ChevronDown, ChevronLeft, Folder, FolderOpen, Plus, Trash2, Edit2, Layers } from 'lucide-react';
 import { formatCurrency } from './ui';
 
 interface PortfolioTreeProps {
@@ -24,6 +24,25 @@ export const PortfolioTree: React.FC<PortfolioTreeProps> = ({
 }) => {
   return (
     <div className="flex flex-col gap-1">
+      {/* All Portfolios Option (Only at root level) */}
+      {depth === 0 && (
+        <div 
+          onClick={() => onSelect('ALL_ROOT')}
+          className={`
+            flex items-center gap-2 px-3 py-3 rounded-lg cursor-pointer transition-all mb-2 border-b-2 border-slate-100
+            ${selectedId === 'ALL_ROOT' ? 'bg-slate-800 text-white shadow-md' : 'bg-white hover:bg-slate-50 text-slate-700'}
+          `}
+        >
+          <div className={`p-1.5 rounded-md ${selectedId === 'ALL_ROOT' ? 'bg-white/10' : 'bg-brand-50 text-brand-600'}`}>
+             <Layers size={18} />
+          </div>
+          <div className="flex flex-col">
+            <span className="font-bold text-sm">کل سبدها</span>
+            <span className={`text-[10px] ${selectedId === 'ALL_ROOT' ? 'text-slate-400' : 'text-slate-400'}`}>نمای کلی سرمایه</span>
+          </div>
+        </div>
+      )}
+
       {portfolios.map((portfolio) => (
         <PortfolioNode 
           key={portfolio.id}
